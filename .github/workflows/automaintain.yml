@@ -1,0 +1,81 @@
+name: AutoMaintain
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  discussion:
+    types: [created, edited, answered, unanswered]
+  discussion_comment:
+    types: [created]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  discussions: write
+
+concurrency:
+  group: automaintain-agent
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: "StuffzEZ/AutoMaintain"
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'issues' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request_review' ||
+      github.event_name == 'pull_request_review_comment' ||
+      github.event_name == 'discussion' ||
+      github.event_name == 'discussion_comment' ||
+      (github.event_name == 'issue_comment' && github.event.action == 'created' && contains(github.event.comment.body, '!retry'))
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install AutoMaintain scripts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SCRIPTS_DIR=".github/scripts"
+          mkdir -p "$SCRIPTS_DIR"
+          FILES="agent.js github-client.js lock.js model-client.js tools.js reconcile.js"
+          echo "Fetching scripts from $SOURCE_REPO ..."
+          for f in $FILES; do
+            gh api "repos/$SOURCE_REPO/contents/$f" -q .content 2>/dev/null \
+              | base64 -d > "$SCRIPTS_DIR/$f" 2>/dev/null \
+              && echo "  OK $f" \
+              || { gh api "repos/$SOURCE_REPO/contents/scripts/$f" -q .content 2>/dev/null \
+                   | base64 -d > "$SCRIPTS_DIR/$f" 2>/dev/null \
+                   && echo "  OK scripts/$f" \
+                   || echo "  SKIP $f"; }
+          done
+          echo "Scripts ready."
+
+      - name: Run AutoMaintain agent
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_MODEL: "google/gemma-4-31b-it:free"
+          TRUST_LABEL: "trust"
+          ALLOWED_ACTIONS: "comment_issue,create_issue,add_labels,remove_labels,reply_pr,noop,flag_suspicious,mark_duplicate,close_as_not_planned,close_issue,create_branch,edit_file,delete_file,open_pr,merge_pr,review_pr,approve_pr,request_changes_pr,comment_discussion,answer_discussion"
+          ENABLED_TOOLS: "search_web,read_file,list_files,grep_repo"
+        run: node .github/scripts/agent.js
